@@ -6,187 +6,142 @@ import (
 	"strconv"
 )
 
-// Precision indicates whether the conversion to Float16 is
-// exact, subnormal without dropped bits, inexact, underflow, or overflow.
-type Precision int
-
-const (
-	PrecisionExact     Precision = iota // exact conversion, round-trips
-	PrecisionUnknown                    // subnormal, may or may not round-trip
-	PrecisionInexact                    // dropped bits, cannot round-trip
-	PrecisionUnderflow                  // underflow, cannot round-trip
-	PrecisionOverflow                   // overflow, cannot round-trip
-)
-
 // Float16 represents IEEE 754 half-precision floating-point numbers (binary16).
 type Float16 uint16
 
-// Float16 bit masks and special values.
-const (
-	signMask Float16 = 0x8000
-	expMask  Float16 = 0x7c00
-	coefMask Float16 = 0x03ff
-	qnanBit  Float16 = 0x0200
+// Precision indicates the accuracy of float32 to Float16 conversion.
+type Precision int
 
-	posInf Float16 = 0x7c00
-	negInf Float16 = 0xfc00
-	qNaN   Float16 = 0x7e01
-	sNaN   Float16 = 0x7c01
-)
-
-// Float32 bit layout constants.
 const (
-	f32Sign     uint32 = 0x80000000
-	f32Exp      uint32 = 0x7f800000
-	f32Coef     uint32 = 0x007fffff
-	f32Shift    uint32 = 23
-	f32Bias     int32  = 127
-	f16Bias     int32  = 15
-	f16ExpMax   uint32 = 0x1f
-	f32Hidden   uint32 = 0x00800000
-	f32RoundBit uint32 = 0x00001000
+	PrecisionExact     Precision = iota // exact, round-trips
+	PrecisionUnknown                    // subnormal, may not round-trip
+	PrecisionInexact                    // bits dropped, cannot round-trip
+	PrecisionUnderflow                  // underflow
+	PrecisionOverflow                   // overflow
 )
 
 // SmallestNonzero is the smallest positive nonzero Float16 (≈5.96e-08).
 const SmallestNonzero = Float16(0x0001)
 
-// ErrInvalidNaN indicates the input was not a valid NaN.
+// ErrInvalidNaN is returned when input is not a valid NaN.
 var ErrInvalidNaN = errors.New("float16: expected NaN input")
 
-// PrecisionFromfloat32 returns Precision without performing
-// the conversion.  Conversions from both Infinity and NaN
-// values will always report PrecisionExact even if NaN payload
-// or NaN-Quiet-Bit is lost. This function is kept simple to
-// allow inlining and run < 0.5 ns/op, to serve as a fast filter.
+// Float16 bit layout.
+const (
+	signMask Float16 = 0x8000
+	expMask  Float16 = 0x7c00
+	coefMask Float16 = 0x03ff
+	qnanBit  Float16 = 0x0200
+	uvPosInf Float16 = 0x7c00
+	uvNegInf Float16 = 0xfc00
+	uvQNaN   Float16 = 0x7e01
+	uvSNaN   Float16 = 0x7c01
+)
+
+// Float32 bit layout.
+const (
+	f32Sign   uint32 = 0x80000000
+	f32Exp    uint32 = 0x7f800000
+	f32Coef   uint32 = 0x007fffff
+	f32Shift  uint32 = 23
+	f32Bias   int32  = 127
+	f32Hidden uint32 = 0x00800000
+	f32Round  uint32 = 0x00001000
+	f16Bias   int32  = 15
+	f16ExpMax uint32 = 0x1f
+)
+
+// PrecisionFromfloat32 returns Precision without performing the conversion.
+// Inf/NaN always report PrecisionExact. Designed for inlining (<0.5 ns/op).
 func PrecisionFromfloat32(f32 float32) Precision {
-	u32 := math.Float32bits(f32)
-
-	if u32 == 0 || u32 == f32Sign {
+	u := math.Float32bits(f32)
+	if u == 0 || u == f32Sign {
 		return PrecisionExact
 	}
 
-	const dropMask = f32Coef >> 10
+	exp := int32((u&f32Exp)>>f32Shift) - f32Bias
+	coef := u & f32Coef
 
-	exp := int32((u32&f32Exp)>>f32Shift) - f32Bias
-	coef := u32 & f32Coef
-
-	if exp == 128 {
+	switch {
+	case exp == 128:
 		return PrecisionExact
-	}
-
-	// https://en.wikipedia.org/wiki/Half-precision_floating-point_format says,
-	// "Decimals between 2^−24 (minimum positive subnormal) and 2^−14 (maximum subnormal): fixed interval 2^−24"
-	if exp < -24 {
+	case exp < -24:
 		return PrecisionUnderflow
-	}
-	if exp > 15 {
+	case exp > 15:
 		return PrecisionOverflow
-	}
-	if coef&dropMask != 0 {
+	case coef&(f32Coef>>10) != 0:
 		return PrecisionInexact
+	case exp < -14:
+		return PrecisionUnknown // subnormal
+	default:
+		return PrecisionExact
 	}
-
-	if exp < -14 {
-		// Subnormals. Caller may want to test these further.
-		// There are 2046 subnormals that can successfully round-trip f32->f16->f32
-		// and 20 of those 2046 have 32-bit input coef == 0.
-		// RFC 7049 and 7049bis Draft 12 don't precisely define "preserves value"
-		// so some protocols and libraries will choose to handle subnormals differently
-		// when deciding to encode them to CBOR float32 vs float16.
-		return PrecisionUnknown
-	}
-
-	return PrecisionExact
 }
 
-// Frombits returns the float16 number corresponding to the IEEE 754 binary16
-// representation u16, with the sign bit of u16 and the result in the same bit
-// position. Frombits(Bits(x)) == x.
-func Frombits(u16 uint16) Float16 {
-	return Float16(u16)
+// Frombits returns Float16 from IEEE 754 binary16 bits. Frombits(Bits(x)) == x.
+func Frombits(b uint16) Float16 { return Float16(b) }
+
+// Fromfloat32 converts float32 to Float16 using IEEE round-to-nearest-even.
+func Fromfloat32(f float32) Float16 {
+	return Float16(f32bitsToF16bits(math.Float32bits(f)))
 }
 
-// Fromfloat32 returns a Float16 value converted from f32. Conversion uses
-// IEEE default rounding (nearest int, with ties to even).
-func Fromfloat32(f32 float32) Float16 {
-	return Float16(f32bitsToF16bits(math.Float32bits(f32)))
-}
-
-// FromNaN32ps converts a float32 NaN to Float16 NaN preserving sign and payload.
-// Returns ErrInvalidNaN if input is not NaN.
-func FromNaN32ps(nan float32) (Float16, error) {
-	u32 := math.Float32bits(nan)
-	sign := u32 & f32Sign
-	exp := u32 & f32Exp
-	coef := u32 & f32Coef
-
-	if exp != f32Exp || coef == 0 {
-		return sNaN, ErrInvalidNaN
+// FromNaN32ps converts float32 NaN to Float16 NaN preserving sign and payload.
+func FromNaN32ps(f float32) (Float16, error) {
+	u := math.Float32bits(f)
+	s, e, c := u&f32Sign, u&f32Exp, u&f32Coef
+	if e != f32Exp || c == 0 {
+		return uvSNaN, ErrInvalidNaN
 	}
-
-	f16 := Float16((sign >> 16) | uint32(expMask) | (coef >> 13))
+	f16 := Float16((s >> 16) | uint32(expMask) | (c >> 13))
 	if f16&coefMask == 0 {
-		f16 |= 0x0001
+		f16 |= 1
 	}
 	return f16, nil
 }
 
-// NaN returns a Float16 quiet NaN (0x7e01).
-func NaN() Float16 { return qNaN }
+// NaN returns a quiet NaN.
+func NaN() Float16 { return uvQNaN }
 
-// Inf returns positive infinity if sign >= 0, negative infinity otherwise.
+// Inf returns +Inf if sign >= 0, -Inf otherwise.
 func Inf(sign int) Float16 {
-	if sign >= 0 {
-		return posInf
+	if sign < 0 {
+		return uvNegInf
 	}
-	return negInf
+	return uvPosInf
 }
 
-// Float32 converts f to float32 (lossless).
-func (f Float16) Float32() float32 {
-	return math.Float32frombits(f16bitsToF32bits(uint16(f)))
-}
+// Float32 converts to float32 (lossless).
+func (f Float16) Float32() float32 { return math.Float32frombits(f16bitsToF32bits(uint16(f))) }
 
 // Bits returns the IEEE 754 binary16 representation.
 func (f Float16) Bits() uint16 { return uint16(f) }
 
+// String implements fmt.Stringer.
+func (f Float16) String() string { return strconv.FormatFloat(float64(f.Float32()), 'f', -1, 32) }
+
 // IsNaN reports whether f is NaN.
-func (f Float16) IsNaN() bool {
-	return f&expMask == expMask && f&coefMask != 0
-}
+func (f Float16) IsNaN() bool { return f&expMask == expMask && f&coefMask != 0 }
 
 // IsQuietNaN reports whether f is a quiet NaN.
-func (f Float16) IsQuietNaN() bool {
-	return f&expMask == expMask && f&coefMask != 0 && f&qnanBit != 0
-}
+func (f Float16) IsQuietNaN() bool { return f.IsNaN() && f&qnanBit != 0 }
 
-// IsInf reports whether f is infinity. sign > 0: +Inf, sign < 0: -Inf, sign == 0: either.
+// IsInf reports whether f is infinity (sign: 0=any, >0=+Inf, <0=-Inf).
 func (f Float16) IsInf(sign int) bool {
 	if sign == 0 {
-		return f == posInf || f == negInf
+		return f == uvPosInf || f == uvNegInf
 	}
-	if sign > 0 {
-		return f == posInf
-	}
-	return f == negInf
+	return (sign > 0 && f == uvPosInf) || (sign < 0 && f == uvNegInf)
 }
 
 // IsFinite reports whether f is finite (not Inf or NaN).
 func (f Float16) IsFinite() bool { return f&expMask != expMask }
 
-// IsNormal reports whether f is a normal number (not zero, subnormal, Inf, or NaN).
-func (f Float16) IsNormal() bool {
-	e := f & expMask
-	return e != 0 && e != expMask
-}
+// IsNormal reports whether f is normal (not zero, subnormal, Inf, or NaN).
+func (f Float16) IsNormal() bool { e := f & expMask; return e != 0 && e != expMask }
 
 // Signbit reports whether f is negative or negative zero.
 func (f Float16) Signbit() bool { return f&signMask != 0 }
-
-// String implements fmt.Stringer.
-func (f Float16) String() string {
-	return strconv.FormatFloat(float64(f.Float32()), 'f', -1, 32)
-}
 
 func f16bitsToF32bits(b uint16) uint32 {
 	s := uint32(b>>15) << 31
@@ -251,7 +206,7 @@ func f32bitsToF16bits(b uint32) uint16 {
 
 	hex := uint32(he) << 10
 	hm := m >> 13
-	if m&f32RoundBit != 0 && m&(3*f32RoundBit-1) != 0 {
+	if m&f32Round != 0 && m&(3*f32Round-1) != 0 {
 		return uint16((hs | hex | hm) + 1)
 	}
 	return uint16(hs | hex | hm)
