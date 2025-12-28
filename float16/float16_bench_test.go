@@ -7,80 +7,50 @@ import (
 	"github.com/gocnn/half/float16"
 )
 
-// prevent compiler optimizing out code by assigning to these
-var resultF16 float16.Float16
-var resultF32 float32
-var resultStr string
-var pcn float16.Precision
-
-func BenchmarkFloat32pi(b *testing.B) {
-	result := float32(0)
-	pi32 := float32(math.Pi)
-	pi16 := float16.Fromfloat32(pi32)
-	for b.Loop() {
-		f16 := float16.Frombits(uint16(pi16))
-		result = f16.Float32()
-	}
-	resultF32 = result
-}
-
 func BenchmarkFrombits(b *testing.B) {
-	result := float16.Float16(0)
-	pi32 := float32(math.Pi)
-	pi16 := float16.Fromfloat32(pi32)
+	bits := uint16(float16.Fromfloat32(math.Pi))
 	for b.Loop() {
-		result = float16.Frombits(uint16(pi16))
+		float16.Frombits(bits)
 	}
-	resultF16 = result
 }
 
-func BenchmarkFromFloat32pi(b *testing.B) {
-	result := float16.Float16(0)
-
-	pi := float32(math.Pi)
+func BenchmarkFloat32(b *testing.B) {
+	f := float16.Fromfloat32(math.Pi)
 	for b.Loop() {
-		result = float16.Fromfloat32(pi)
+		f.Float32()
 	}
-	resultF16 = result
 }
 
-func BenchmarkFromFloat32nan(b *testing.B) {
-	result := float16.Float16(0)
+func BenchmarkFromfloat32Normal(b *testing.B) {
+	for b.Loop() {
+		float16.Fromfloat32(math.Pi)
+	}
+}
 
+func BenchmarkFromfloat32NaN(b *testing.B) {
 	nan := float32(math.NaN())
 	for b.Loop() {
-		result = float16.Fromfloat32(nan)
+		float16.Fromfloat32(nan)
 	}
-	resultF16 = result
 }
 
-func BenchmarkFromFloat32subnorm(b *testing.B) {
-	result := float16.Float16(0)
-
-	subnorm := math.Float32frombits(0x007fffff)
+func BenchmarkFromfloat32Subnormal(b *testing.B) {
+	sub := math.Float32frombits(0x007fffff)
 	for b.Loop() {
-		result = float16.Fromfloat32(subnorm)
+		float16.Fromfloat32(sub)
 	}
-	resultF16 = result
 }
 
-func BenchmarkPrecisionFromFloat32(b *testing.B) {
-	var result float16.Precision
-
+func BenchmarkPrecisionFromfloat32(b *testing.B) {
+	f := float32(0.00002)
 	for b.Loop() {
-		f32 := float32(0.00001) + float32(0.00001)
-		result = float16.PrecisionFromfloat32(f32)
+		float16.PrecisionFromfloat32(f)
 	}
-	pcn = result
 }
 
 func BenchmarkString(b *testing.B) {
-	var result string
-
-	pi32 := float32(math.Pi)
-	pi16 := float16.Fromfloat32(pi32)
+	f := float16.Fromfloat32(math.Pi)
 	for b.Loop() {
-		result = pi16.String()
+		_ = f.String()
 	}
-	resultStr = result
 }
