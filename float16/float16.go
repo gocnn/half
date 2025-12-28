@@ -4,7 +4,12 @@ import (
 	"errors"
 	"math"
 	"strconv"
+
+	"github.com/gocnn/half"
 )
+
+// Compile-time interface compliance check.
+var _ half.Float = Float16(0)
 
 // Float16 represents IEEE 754 half-precision floating-point numbers (binary16).
 type Float16 uint16
@@ -114,8 +119,22 @@ func Inf(sign int) Float16 {
 // Float32 converts to float32 (lossless).
 func (f Float16) Float32() float32 { return math.Float32frombits(f16bitsToF32bits(uint16(f))) }
 
+// Float64 converts to float64 (lossless).
+func (f Float16) Float64() float64 { return float64(f.Float32()) }
+
 // Bits returns the IEEE 754 binary16 representation.
 func (f Float16) Bits() uint16 { return uint16(f) }
+
+// Sign returns -1 if f < 0, 0 if f == 0 or NaN, +1 if f > 0.
+func (f Float16) Sign() int {
+	if f.IsNaN() || f&^signMask == 0 {
+		return 0
+	}
+	if f&signMask != 0 {
+		return -1
+	}
+	return 1
+}
 
 // String implements fmt.Stringer.
 func (f Float16) String() string { return strconv.FormatFloat(float64(f.Float32()), 'f', -1, 32) }
